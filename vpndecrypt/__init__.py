@@ -1,8 +1,8 @@
 """VPN config decryptor.
 
 Opens the encrypted export formats used by V2Box, HTTP Injector, HA Tunnel Plus,
-HTTP Custom, NetMod and SlipNet and returns the resulting configuration plus any
-share links found inside it.
+HTTP Custom, NetMod, NPVTunnel and SlipNet and returns the resulting
+configuration plus any share links found inside it.
 
     >>> from vpndecrypt import decrypt
     >>> result = decrypt(open("config.ehi", "rb").read(), "config.ehi")

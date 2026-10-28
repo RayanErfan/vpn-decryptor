@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import struct
 import os
 
 import pytest
@@ -89,6 +90,106 @@ def rst_wrap(tokens: str, passphrase: bytes = b"JN1k3YHc2.6_v235") -> str:
     text = base64.b64encode(blob)
     masked = bytes(b ^ (i % 20 + 2) for i, b in enumerate(text))
     return masked.decode("ascii")
+
+
+def make_npvt(payload: dict) -> bytes:
+    """An ``NPVT1`` token: 16-byte counter + white-box AES-CTR body."""
+    from vpndecrypt.formats import npvt
+
+    plain = json.dumps(payload).encode("utf-8")
+    nonce = bytes(range(16))
+    token = base64.b64encode(nonce + npvt._ctr(nonce, plain)).decode("ascii")
+    return f"NPVT1{token}".encode("ascii")
+
+
+def make_npvs_v1(payload: dict, password: str | None = None) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    header: dict = {"configId": "test", "policy": {"displayMessage": "hello"}}
+    dek = os.urandom(32)
+    if password:
+        salt = os.urandom(16)
+        wrap_nonce = os.urandom(12)
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 1000, 32)
+        wrap = wrap_nonce + ChaCha20Poly1305(derived).encrypt(wrap_nonce, dek, salt)
+        header["passphrase"] = {
+            "salt": base64.urlsafe_b64encode(salt).decode().rstrip("="),
+            "wrap": base64.urlsafe_b64encode(wrap).decode().rstrip("="),
+            "iters": 1000,
+        }
+    header_raw = json.dumps(header).encode("utf-8")
+    nonce = os.urandom(12)
+    body = ChaCha20Poly1305(dek).encrypt(nonce, json.dumps(payload).encode("utf-8"), header_raw)
+    return (
+        b"NPVS\x01"
+        + struct.pack(">I", len(header_raw))
+        + header_raw
+        + nonce
+        + struct.pack(">I", len(body))
+        + body
+    )
+
+
+def make_npvs_v5(payload: dict, password: str) -> bytes:
+    """A Gen-2 container sealed with a passphrase and an ``NPF`` field table."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    key = os.urandom(32)
+    config_id = os.urandom(16)
+    content_id = os.urandom(32)
+    nonce = os.urandom(12)
+    salt = os.urandom(16)
+    iterations = 1000
+
+    fields = {
+        1: b'"a.example"',
+        2: b"443",
+        3: b"6",
+        4: b'"secret"',
+        5: b'"tls"',
+        6: b'"a.example"',
+        0xFFFF: json.dumps(payload).encode("utf-8"),
+    }
+    body = bytearray(b"NPF\x01" + content_id + struct.pack(">H", len(fields)))
+    for seq, plain in fields.items():
+        field_key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=content_id,
+            info=b"NPV-fields-v1/field/" + struct.pack(">H", seq),
+        ).derive(key)
+        aad = (
+            b"NPV-fields-v1/record/" + content_id + struct.pack(">H", seq)
+            + struct.pack(">I", len(plain))
+        )
+        blob = ChaCha20Poly1305(field_key).encrypt(bytes(12), plain, aad)
+        body += struct.pack(">HHH", seq, 0, len(blob)) + blob
+
+    header = bytearray(53)
+    header[0] = 1
+    header[1:17] = config_id
+    header[50] = 1
+    header[51:53] = struct.pack(">H", 0)
+    kdk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations, 32)
+    wrap_nonce = os.urandom(12)
+    wrap = wrap_nonce + ChaCha20Poly1305(kdk).encrypt(wrap_nonce, key, salt)
+    header += struct.pack(">I", iterations) + salt + wrap
+
+    prefix = bytes(header)
+    meta_key = HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=nonce, info=b"NPVS-v5/metadata"
+    ).derive(key)
+    meta = ChaCha20Poly1305(meta_key).encrypt(nonce, b'{"policy":{}}', prefix)
+    header += struct.pack(">I", len(meta)) + meta
+
+    return (
+        b"NPVS\x05"
+        + struct.pack(">I", len(header))
+        + bytes(header)
+        + nonce
+        + struct.pack(">I", len(body))
+        + bytes(body)
+    )
 
 
 # --------------------------------------------------------------------- tests
@@ -224,9 +325,83 @@ def test_hc_stream_with_plain_content() -> None:
     assert result["config"]["fields"]["payload"] == "keep-alive"
 
 
-def test_npvt_is_reported_as_unsupported() -> None:
-    with pytest.raises(UnsupportedFormat):
-        decrypt(b"anything", "config.npvs")
+def test_npvt_token_roundtrip() -> None:
+    payload = {
+        "configs": [
+            {
+                "v2rayProfile": {
+                    "configType": 5,
+                    "server": "a.example",
+                    "serverPort": 443,
+                    "password": "11111111-2222-3333-4444-555555555555",
+                    "security": "tls",
+                    "network": "ws",
+                    "path": "/ws",
+                }
+            }
+        ]
+    }
+    data = make_npvt(payload)
+
+    assert identify(data, "x.npvt")[0] == "npvt"
+    result = decrypt(data, "x.npvt")
+    assert result["format"] == "npvt"
+    assert result["links"][0].startswith("vless://11111111-2222-3333-4444-555555555555@a.example:443?")
+    assert "path=%2Fws" in result["links"][0]
+
+
+def test_npvs_v1_password_flow() -> None:
+    payload = {"configs": [{"sshConfig": {"sshHost": "ssh.example", "sshPort": 22, "sshUsername": "root"}}]}
+    data = make_npvs_v1(payload, password="hunter2")
+
+    assert identify(data, "x.npvs")[0] == "npvt"
+    with pytest.raises(PasswordRequired):
+        decrypt(data, "x.npvs")
+    with pytest.raises(DecryptError) as excinfo:
+        decrypt(data, "x.npvs", password="wrong")
+    assert excinfo.value.code == "bad_password"
+
+    result = decrypt(data, "x.npvs", password="hunter2")
+    assert result["links"][0].startswith("ssh://root:@ssh.example:22?")
+
+
+def test_npvs_v5_field_table() -> None:
+    # Every value in a Gen-2 table is a sequence number, not a literal.
+    payload = {
+        "configs": [
+            {
+                "v2rayProfile": {
+                    "configType": 3,
+                    "server": 1,
+                    "serverPort": 2,
+                    "password": 4,
+                    "security": 5,
+                    "sni": 6,
+                }
+            }
+        ]
+    }
+    data = make_npvs_v5(payload, password="hunter2")
+
+    with pytest.raises(PasswordRequired):
+        decrypt(data, "x.npvs")
+    with pytest.raises(DecryptError) as excinfo:
+        decrypt(data, "x.npvs", password="nope")
+    assert excinfo.value.code == "bad_password"
+
+    result = decrypt(data, "x.npvs", password="hunter2")
+    assert result["links"] == [
+        "trojan://secret@a.example:443?security=tls&sni=a.example&type=tcp#NPVS"
+    ]
+
+
+def test_npvt_plain_json_export() -> None:
+    payload = {"configs": [{"socksConfig": {"server": "p.example", "serverPort": 1080, "username": "u"}}]}
+    result = decrypt(json.dumps(payload).encode(), "x.npvs")
+    assert result["links"][0].startswith("socks://p.example:1080?")
+
+    with pytest.raises(DecryptError):
+        decrypt(b"nothing useful here", "x.npvt")
 
 
 def test_garbage_hc_asks_for_password() -> None:

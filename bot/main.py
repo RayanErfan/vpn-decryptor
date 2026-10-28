@@ -46,11 +46,9 @@ FORMAT_LIST = """<b>Supported files</b>
 • <code>.hat</code> — HA Tunnel Plus
 • <code>.hc</code> — HTTP Custom
 • <code>.nm</code> — NetMod
+• <code>.npvt</code>, <code>.npvtsub</code>, <code>.npvs</code> — NPVTunnel
 • <code>nm-vless://</code>, <code>nm-vmess://</code>, … — NetMod links
 • <code>slipnet-enc://</code> — SlipNet
-
-<b>Not available yet</b>
-• <code>.npvt</code>, <code>.npvtsub</code>, <code>.npvs</code>
 
 <b>Locked files</b>
 • Password-protected exports are opened with the password written in the post
@@ -123,6 +121,7 @@ def _label(fmt: str) -> str:
         "hat": "HA Tunnel Plus",
         "http_custom": "HTTP Custom",
         "netmod": "NetMod",
+        "npvt": "NPVTunnel",
         "slipnet": "SlipNet",
     }.get(fmt, fmt)
 

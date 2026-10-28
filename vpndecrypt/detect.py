@@ -26,7 +26,7 @@ import re
 from typing import Any, Iterable
 
 from .errors import BadPassword, DecryptError, PasswordRequired, UnsupportedFormat
-from .formats import ehi, hat, http_custom, netmod, slipnet, v2box
+from .formats import ehi, hat, http_custom, netmod, npvt, slipnet, v2box
 
 # Prefixes that a NetMod link can carry: nm-vless://, nm-vmess://, ...
 _NETMOD_LINK = re.compile(r"^nm-([a-z0-9]+)://", re.IGNORECASE)
@@ -37,11 +37,18 @@ _BY_EXTENSION = {
     ".hat": "hat",
     ".hc": "http_custom",
     ".nm": "netmod",
+    ".npvt": "npvt",
+    ".npvtsub": "npvt",
+    ".npvs": "npvt",
     ".v2box": "v2box",
 }
 
 # Formats with a working implementation, in the order used when guessing.
-_GUESS_ORDER = ("ehi", "v2box", "http_custom", "netmod", "hat")
+_GUESS_ORDER = ("ehi", "v2box", "npvt", "http_custom", "netmod", "hat")
+
+# Formats that can ask for a password, and how to tell they are worth asking
+# about when the file name says nothing.
+_LOOKS = {"http_custom": http_custom.looks_like, "npvt": npvt.looks_like}
 
 _MAX_GUESS_BYTES = 4 * 1024 * 1024
 
@@ -71,14 +78,18 @@ def identify(data: bytes, name: str = "") -> tuple[str, dict[str, Any], bool]:
     if data[:4] == b"\x00\x03ehi":
         return "ehi", {}, True
 
+    if data[:4] == b"NPVS" or data[:5] == b"NPVO1":
+        return "npvt", {}, True
+    head = data[:4096]
+    if b"NPVT1" in head or b"NPVTSUB1" in head:
+        return "npvt", {}, True
+
     stripped = text.lstrip()
     if stripped.startswith("{") and v2box.looks_like(data, name):
         return "v2box", {}, True
 
     if suffix in _BY_EXTENSION:
         return _BY_EXTENSION[suffix], {}, True
-    if suffix in (".npvt", ".npvtsub", ".npvs"):
-        return "npvt", {}, True
 
     # No magic value, scheme or useful extension: the caller has to guess.
     return "unknown", {}, False
@@ -141,7 +152,7 @@ def _guess(
         except (PasswordRequired, BadPassword) as exc:
             # Only meaningful when the payload actually looks like that format;
             # otherwise every unknown file would turn into a password prompt.
-            if fmt == "http_custom" and http_custom.looks_like(data):
+            if fmt in _LOOKS and _LOOKS[fmt](data):
                 password_error = exc
             else:
                 errors.append(exc)
@@ -184,8 +195,5 @@ def _run(fmt: str, data: bytes, hints: dict[str, Any], password: str | None) -> 
     if fmt == "v2box":
         return v2box.decrypt(data, password=password)
     if fmt == "npvt":
-        raise UnsupportedFormat(
-            "NPVT/NPVS/NPVT-sub exports are not supported yet; only .v2box, .ehi, "
-            ".hat, .hc, .nm and the slipnet-enc / nm-* links are available"
-        )
+        return npvt.decrypt(data, password=password)
     raise UnsupportedFormat(f"unrecognised file type ({fmt})")

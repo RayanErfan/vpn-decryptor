@@ -49,13 +49,14 @@ SUPPORTED = [
     {"id": "hat", "extensions": [".hat"], "name": "HA Tunnel Plus"},
     {"id": "http_custom", "extensions": [".hc"], "name": "HTTP Custom"},
     {"id": "netmod", "extensions": [".nm", "nm-*://"], "name": "NetMod"},
+    {"id": "npvt", "extensions": [".npvt", ".npvtsub", ".npvs"], "name": "NPVTunnel"},
     {"id": "slipnet", "extensions": ["slipnet-enc://"], "name": "SlipNet"},
 ]
 
 app = FastAPI(
     title="VPN Decryptor",
     description="Decrypts the export formats used by V2Box, HTTP Injector, "
-                "HA Tunnel Plus, HTTP Custom, NetMod and SlipNet.",
+                "HA Tunnel Plus, HTTP Custom, NetMod, NPVTunnel and SlipNet.",
     version=__version__,
 )
 
@@ -74,12 +75,7 @@ async def health() -> dict[str, Any]:
 
 @app.get("/formats")
 async def formats() -> dict[str, Any]:
-    return {
-        "supported": SUPPORTED,
-        "pending": [
-            {"id": "npvt", "extensions": [".npvt", ".npvtsub", ".npvs"]},
-        ],
-    }
+    return {"supported": SUPPORTED, "pending": []}
 
 
 @app.get("/")

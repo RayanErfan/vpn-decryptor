@@ -16,7 +16,7 @@ and a Telegram bot; both share the same core.
 | NetMod | `.nm`, `nm-vless://`, `nm-vmess://`, … | decode (settings JSON or bare link) |
 | SlipNet | `slipnet-enc://` | decode, profile v1–v28 |
 | HTTP Custom | `.hc` | stream v2.6/2.7 + legacy CJK-XOR builds, password prompt |
-| NPVT / NPVS | `.npvt`, `.npvtsub`, `.npvs` | not yet |
+| NPVTunnel | `.npvt`, `.npvtsub`, `.npvs` | decode, incl. white-box AES and password-protected containers |
 
 `.hc` files that carry a user password or a device lock are reported as
 `password_required` instead of guessing: the payload is unreadable without the
@@ -175,6 +175,11 @@ Short notes, one per format, so the code stays readable:
   ChaCha20 / XOR / braille / decimal layers; older builds use a CJK-XOR + AES
   chain instead. Builds that no published scheme covers yet are reported as
   locked rather than mangled.
+- **NPVTunnel** — `NPVT1`/`NPVTSUB1` tokens run through a white-box AES-CTR
+  network (no key in the app), and `NPVS` containers wrap a ChaCha20-Poly1305
+  body behind an app key or a PBKDF2 passphrase, with `npvs1:` sentinels and an
+  `NPF` field table to expand. Gen-2 files use a 13-round variant of the same
+  table network.
 
 The format constants (keys, IVs, token order) are properties of each file
 format. The implementations here were written from scratch for this project.
